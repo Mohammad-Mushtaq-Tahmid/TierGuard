@@ -1,0 +1,43 @@
+# Permission tiers. Baseline = official green/yellow/red. We may ESCALATE dynamically, never relax.
+# Assumptions that need organiser confirmation are marked ASSUMPTION.
+version: 1
+params:
+  yellow_daily_transfer_limit_fen: 100000   # official: daily cumulative <= 1,000 CNY is yellow
+  escalate_after_failures: 2                # security failures in a row -> any state change becomes red
+  max_failure_score: 3                      # circuit breaker: session lock
+  confirmation_ttl_seconds: 120
+  otp_max_attempts: 3
+tools:
+  get_balance:            {tier: green}
+  list_transactions:      {tier: green}
+  summarise_spending:     {tier: green}
+  resolve_payee:          {tier: green}
+  get_cards:              {tier: green}
+  list_subscriptions:     {tier: yellow}    # ASSUMPTION (organiser did not answer): follow the official wording literally, query = yellow
+  transfer:
+    tier: yellow
+    sensitive_args: [payee_id, amount]
+    escalate:
+      - {when: projected_over_limit, to: red, reason: DAILY_CUMULATIVE_OVER_1000}
+    warnings:
+      - {when: new_payee, code: FIRST_TIME_PAYEE}
+    risk_warning: "Transfers cannot be reversed by the assistant. Check the payee and amount."
+  pause_or_cancel_subscription: {tier: yellow, sensitive_args: [subscription_id]}
+  apply_virtual_card:     {tier: yellow}
+  freeze_card:            {tier: yellow, sensitive_args: [card_id]}   # ASSUMPTION: protective action
+  unfreeze_card:
+    tier: red
+    sensitive_args: [card_id]
+    risk_warning: "Unfreezing re-enables the card for all payments."
+  report_card_lost:
+    tier: red                                                      # official: card loss report is red
+    sensitive_args: [card_id]
+    risk_warning: "The card will be permanently blocked and a replacement issued."
+  set_card_limit:
+    tier: yellow                                                   # ASSUMPTION: lowering = yellow
+    sensitive_args: [card_id, daily_limit]
+    escalate:
+      - {when: limit_is_raise, to: red, reason: LIMIT_RAISE}       # ASSUMPTION: raising = red
+    risk_warning: "A higher limit increases your exposure if the card is misused."
+  export_customer_data:         {tier: black}
+  change_security_settings:     {tier: black}
