@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TierGuard: AI Banking Agent</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">T</span><div><b>TierGuard</b><small>AI banking agent with tiered permissions</small></div></div>
+  <div class="head-right"><span id="mode" class="badge">model: ...</span><button id="reset" class="ghost">Reset demo</button></div>
+</header>
+<main>
+  <section id="chatpane">
+    <div id="acct"></div>
+    <div id="log" aria-live="polite"></div>
+    <div id="chips"></div>
+    <div id="composer">
+      <input id="msg" type="text" maxlength="500" autocomplete="off" placeholder="Type in 中文 or English, e.g. 给我妈转五百">
+      <button id="send">Send</button>
+    </div>
+  </section>
+  <aside id="inspector">
+    <h2>Agent inspector</h2>
+    <div class="legend"><span class="dot info"></span>model / request <span class="dot green"></span>green / ok <span class="dot yellow"></span>yellow <span class="dot red"></span>red / denied</div>
+    <div id="events"></div>
+    <div id="chain"></div>
+  </aside>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

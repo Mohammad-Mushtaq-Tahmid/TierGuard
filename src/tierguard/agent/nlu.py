@@ -150,8 +150,8 @@ def plan_turn(gateway, session, llm, utterance: str) -> TurnResult:
         tool = "report_card_lost" if it == "card_lost" else "freeze_card"
         return _confirm_turn(gateway, session, tool, {"card_id": cards[0]["card_id"]}, lang, notes)
 
-    return TurnResult("clarify", _say(lang, "抱歉，我没有理解。您可以说“查余额”“给妈妈转500”或“上个月花了多少”。",
-                                     "Sorry, I did not understand. Try: 'what is my balance', 'send 500 to mom', 'what did I spend last month'."),
+    return TurnResult("clarify", _say(lang, "这个请求我在这里办不了。我可以帮您查余额、分析消费、转账和管理银行卡，例如“查余额”“给妈妈转500”“上个月花了多少”。",
+                                     "I can't help with that here. I can check your balance, analyse spending, send transfers and manage cards, for example 'what is my balance', 'send 500 to mom' or 'what did I spend last month'."),
                       notes=notes)
 
 
