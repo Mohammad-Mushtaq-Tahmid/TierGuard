@@ -33,6 +33,8 @@ class TurnResult:
     pending: dict | None = None     # {"tool","args","token","needs_step_up"} for kind == confirm
     card: dict | None = None
     notes: list = field(default_factory=list)   # e.g. amount_mismatch, bad_model_output (for metrics)
+    clarify_state: dict | None = None           # what the dialogue manager needs to continue after a question
+    code: str | None = None                     # machine-readable error code (e.g. OTP_WRONG)
 
 
 def parse_model_json(raw: str) -> dict | None:
@@ -129,25 +131,16 @@ def plan_turn(gateway, session, llm, utterance: str) -> TurnResult:
         amounts = extract_amounts(utterance)         # the user's own text is the source of truth
         if len(amounts) != 1:
             q = _say(lang, "请告诉我具体转账金额（只转一笔）。", "Please tell me one specific amount to transfer.")
-            return TurnResult("clarify", q, notes=notes)
+            state = {"type": "need_amount", "payee_query": intent["payee_query"]} if (not amounts and intent["payee_query"]) else None
+            return TurnResult("clarify", q, notes=notes, clarify_state=state)
         amount = amounts[0]
         llm_amt = parse_amount(intent["amount_text"]) if intent["amount_text"] else None
         if llm_amt is not None and llm_amt != amount:
             notes.append(f"amount_mismatch:model={llm_amt},code={amount}")  # code wins, logged for metrics
         if not intent["payee_query"]:
-            return TurnResult("clarify", _say(lang, "要转给谁？", "Who should I send it to?"), notes=notes)
-        rp = gateway.call(session, "resolve_payee", {"query": intent["payee_query"]})
-        cands = (rp.data or {}).get("candidates", []) if rp.status == "executed" else []
-        if not cands:
-            return TurnResult("clarify", _say(lang, f"没有找到收款人“{intent['payee_query']}”，请确认姓名。",
-                                             f"I could not find a saved payee matching '{intent['payee_query']}'."), notes=notes)
-        if len(cands) > 1 and cands[0]["score"] == cands[1]["score"]:
-            opts = "；".join(f"{c['name']}（{c['account_masked']}）" for c in cands) if lang == "zh" else \
-                   "; ".join(f"{c['name']} ({c['account_masked']})" for c in cands)
-            return TurnResult("clarify", _say(lang, f"有多个匹配的收款人，请选择：{opts}", f"Several payees match, which one? {opts}"),
-                              notes=notes)
-        args = {"payee_id": cands[0]["payee_id"], "amount": f"{amount:.2f}"}
-        return _confirm_turn(gateway, session, "transfer", args, lang, notes)
+            return TurnResult("clarify", _say(lang, "要转给谁？", "Who should I send it to?"), notes=notes,
+                              clarify_state={"type": "need_payee", "amount": str(amount)})
+        return transfer_flow(gateway, session, lang, intent["payee_query"], amount, notes)
 
     if it in ("card_lost", "freeze_card"):
         rc = gateway.call(session, "get_cards", {})
@@ -169,6 +162,25 @@ ZH_RISK = {"transfer": "转账无法由助手撤回，请核对收款人和金�
 ZH_RISK_DEFAULT = "这是高风险操作，需要强身份验证。"
 ZH_WARN = {"FIRST_TIME_PAYEE": "这是您第一次向该收款人转账。"}
 EN_WARN = {"FIRST_TIME_PAYEE": "This is your first transfer to this payee."}
+
+
+def transfer_flow(gateway, session, lang, payee_query, amount, notes):
+    """Resolve the payee against real records, then build the confirmation card. Shared by first turns and follow-ups."""
+    rp = gateway.call(session, "resolve_payee", {"query": payee_query})
+    cands = (rp.data or {}).get("candidates", []) if rp.status == "executed" else []
+    if not cands:
+        return TurnResult("clarify", _say(lang, f"没有找到收款人“{payee_query}”，请确认姓名。",
+                                         f"I could not find a saved payee matching '{payee_query}'."), notes=notes,
+                          clarify_state={"type": "need_payee", "amount": str(amount)})
+    if len(cands) > 1 and cands[0]["score"] == cands[1]["score"]:
+        tied = [c for c in cands if c["score"] == cands[0]["score"]]
+        opts = "；".join(f"{i}. {c['name']}（{c['account_masked']}）" for i, c in enumerate(tied, 1)) if lang == "zh" else \
+               "; ".join(f"{i}. {c['name']} ({c['account_masked']})" for i, c in enumerate(tied, 1))
+        return TurnResult("clarify", _say(lang, f"有多个匹配的收款人，请选择（回复序号或尾号）：{opts}",
+                                         f"Several payees match, which one (reply with the number or last 4 digits)? {opts}"),
+                          notes=notes, clarify_state={"type": "payee_choice", "candidates": tied, "amount": str(amount)})
+    args = {"payee_id": cands[0]["payee_id"], "amount": f"{amount:.2f}"}
+    return _confirm_turn(gateway, session, "transfer", args, lang, notes)
 
 
 def _confirm_turn(gateway, session, tool, args, lang, notes):
@@ -210,6 +222,7 @@ def confirm_pending(gateway, session, pending: dict, lang: str = "en", otp: str 
     why = {"INSUFFICIENT_FUNDS": _say(lang, "余额不足，未执行。", "Insufficient balance. Nothing was sent."),
            "OTP_REQUIRED": _say(lang, "需要验证码。", "A verification code is required."),
            "OTP_WRONG": _say(lang, "验证码不正确。", "That code is incorrect."),
+           "EXPIRED_TOKEN": _say(lang, "确认已超时，未执行任何操作，请重新发起。", "The confirmation expired. Nothing was done, please start again."),
            "UPSTREAM_ERROR": _say(lang, "银行系统暂时不可用，未执行，请稍后重试。",
                                   "The bank is temporarily unavailable. Nothing was done, please retry.")}
-    return TurnResult("error", why.get(r.error_code, r.message or "Not completed."))
+    return TurnResult("error", why.get(r.error_code, r.message or "Not completed."), code=r.error_code)
