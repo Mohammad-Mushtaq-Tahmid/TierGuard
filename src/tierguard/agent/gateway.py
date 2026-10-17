@@ -52,6 +52,7 @@ class Gateway:
         self.conf = confirmations or ConfirmationService(self.policy.params["confirmation_ttl_seconds"],
                                                          self.policy.params["otp_max_attempts"])
         self.tools = build_registry()
+        self.audit.append("system", "policy_loaded", {"sha256": self.policy.sha256, "tools": sorted(self.tools)})
 
     # ----- internals -----
     def _fail(self, s: Session, code: str):
@@ -59,6 +60,10 @@ class Gateway:
         if s.failure_score >= self.policy.params["max_failure_score"] and not s.locked:
             s.locked = True
             self.audit.append(s.session_id, "security_lock", {"score": s.failure_score, "last": code})
+
+    def register_failure(self, s: Session, code: str):
+        """Public hook for other layers (rate limiter...) to feed the circuit breaker."""
+        self._fail(s, code)
 
     def _deny(self, s, tool, code, msg, decision=None, weighted=True):
         if weighted:
@@ -84,6 +89,7 @@ class Gateway:
             return self._deny(s, tool, e.code, e.message)
         try:
             ctx = spec.context_fn(self.bank, s.customer_id, norm, self.policy.params) if spec.context_fn else {}
+            bound = spec.bind_fn(self.bank, s.customer_id, norm) if spec.bind_fn else None
         except BankError as e:
             self._fail(s, e.code)
             self.audit.append(s.session_id, "error", {"tool": tool, "code": e.code})
@@ -93,7 +99,7 @@ class Gateway:
         if d.verdict == "DENY":
             return self._deny(s, tool, "BLACK_TIER" if d.tier == "black" and "UNKNOWN_TOOL" not in d.reasons else d.reasons[0],
                               "This operation is never performed by the assistant", d)
-        ahash = action_hash(s.customer_id, tool, norm)
+        ahash = action_hash(s.customer_id, tool, norm, bound)
         if d.verdict == "ALLOW":
             return self._execute(s, spec, norm, d, idem=None)
         # confirmation / step-up path
@@ -108,7 +114,8 @@ class Gateway:
                     "risk_warning": d.risk_warning, "needs_step_up": ch.needs_step_up,
                     "untrusted_values": tainted, "action_hash": ahash[:12], "expires_in_s": self.conf.ttl}
             self.audit.append(s.session_id, "confirmation_issued", {"tool": tool, "action_hash": ahash,
-                                                                    "tier": d.tier, "step_up": ch.needs_step_up})
+                                                                    "tier": d.tier, "step_up": ch.needs_step_up,
+                                                                    "bound": bound})
             return GatewayResult("needs_confirmation", tool, decision=d.to_dict(), card=card, token=ch.token)
         ok, why = self.conf.redeem(s.session_id, token, ahash, otp)
         self.audit.append(s.session_id, "confirmation_redeemed" if ok else "confirmation_rejected",

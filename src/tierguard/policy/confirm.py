@@ -10,8 +10,14 @@ from dataclasses import dataclass
 from tierguard.audit.log import canonical
 
 
-def action_hash(customer_id: str, tool: str, args: dict) -> str:
-    return hashlib.sha256(canonical({"customer_id": customer_id, "tool": tool, "args": args}).encode()).hexdigest()
+def action_hash(customer_id: str, tool: str, args: dict, bound: dict | None = None) -> str:
+    """SHA-256 of the canonical action. `bound` holds facts about the records the action will touch (payee account
+    fingerprint, card status, subscription price...). If any of them changes after the card was shown, the hash
+    changes and the confirmation is rejected."""
+    body = {"customer_id": customer_id, "tool": tool, "args": args}
+    if bound is not None:
+        body["bound"] = bound
+    return hashlib.sha256(canonical(body).encode()).hexdigest()
 
 
 @dataclass

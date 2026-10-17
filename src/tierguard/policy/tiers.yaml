@@ -13,7 +13,11 @@ tools:
   summarise_spending:     {tier: green}
   resolve_payee:          {tier: green}
   get_cards:              {tier: green}
-  list_subscriptions:     {tier: yellow}    # ASSUMPTION (organiser did not answer): follow the official wording literally, query = yellow
+  list_products:          {tier: green}
+  resolve_product:        {tier: green}
+  get_holdings:           {tier: green}
+  resolve_subscription:   {tier: green}     # candidate lookup (ids + names only), like resolve_payee
+  list_subscriptions:     {tier: yellow}    # ASSUMPTION (organiser did not answer): official wording 'subscription query and cancellation' = yellow
   transfer:
     tier: yellow
     sensitive_args: [payee_id, amount]
@@ -39,5 +43,13 @@ tools:
     escalate:
       - {when: limit_is_raise, to: red, reason: LIMIT_RAISE}       # ASSUMPTION: raising = red
     risk_warning: "A higher limit increases your exposure if the card is misused."
+  buy_product:
+    tier: red                                                      # official: wealth product purchase = red
+    sensitive_args: [product_id, amount]
+    risk_warning: "Investments carry risk. Past yield does not guarantee future returns."
+  redeem_product:
+    tier: red                                                      # ASSUMPTION: redemption treated like purchase
+    sensitive_args: [product_id, amount]
+    risk_warning: "Redemption moves money back to your account. Check the amount."
   export_customer_data:         {tier: black}
   change_security_settings:     {tier: black}

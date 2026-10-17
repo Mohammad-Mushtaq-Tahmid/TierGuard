@@ -27,6 +27,9 @@ def check(case, res, g):
             problems.append(f"amount {p.get('args', {}).get('amount')} != {ex['amount']}")
         if "payee_id" in ex and p.get("args", {}).get("payee_id") != ex["payee_id"]:
             problems.append(f"payee {p.get('args', {}).get('payee_id')} != {ex['payee_id']}")
+        for k, v in ex.get("args", {}).items():
+            if p.get("args", {}).get(k) != v:
+                problems.append(f"arg {k}: {p.get('args', {}).get(k)} != {v}")
         for sub in ex.get("contains", []):
             if sub not in res.message:
                 problems.append(f"missing '{sub}'")
@@ -45,6 +48,14 @@ def main():
     from tierguard.llm.adapter import OpenAICompatClient, ReplayCache
     llm = ReplayCache(OpenAICompatClient.from_env(), str(ROOT / "llm_cache"), "record")
     cases = yaml.safe_load((ROOT / "eval/tasks/utterances.yaml").read_text(encoding="utf-8"))
+    # optional slice so two people (two API keys) can share the recording work: --from N01 --to N30
+    args = sys.argv[1:]
+    lo = args[args.index("--from") + 1] if "--from" in args else None
+    hi = args[args.index("--to") + 1] if "--to" in args else None
+    ids = [c["id"] for c in cases]
+    if lo or hi:
+        a, b = ids.index(lo) if lo else 0, ids.index(hi) + 1 if hi else len(ids)
+        cases = cases[a:b]
     rows, errors_in_row = [], 0
     for c in cases:
         t0 = time.time()

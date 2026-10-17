@@ -1,2 +1,2 @@
-pyyaml>=6.0
+pyyaml==6.0.3
 # Added later (not needed by the security kernel): fastapi, uvicorn, pydantic>=2, hypothesis, pytest

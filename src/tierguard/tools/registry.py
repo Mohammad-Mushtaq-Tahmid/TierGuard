@@ -3,6 +3,7 @@ function (facts the PDP needs), and a card function (what the confirmation card 
 Arithmetic and aggregation live here in code, never in the LLM."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Callable
 
@@ -21,6 +22,7 @@ class ToolSpec:
     context_fn: Callable | None = None
     card_fn: Callable | None = None
     untrusted_outputs: tuple = ()  # output fields that carry third-party text (memos, merchants...)
+    bind_fn: Callable | None = None  # facts about the touched records, bound into the confirmation hash
 
 
 def _transfer_ctx(bank: Bank, cid, args, params):
@@ -59,6 +61,39 @@ def _sub_card(bank, cid, args):
             "amount_cny": cny(s["amount_fen"]), "next_charge": s["next_charge"]}
 
 
+def _fp(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _transfer_bind(bank, cid, args):
+    p = bank.get_payee(cid, args["payee_id"])
+    return {"payee_account_fp": _fp(p["no"]), "payee_name": p["name"]}
+
+
+def _card_bind(bank, cid, args):
+    c = bank._own(bank.cards, args["card_id"], cid, "Card")
+    return {"card_last4": c["last4"], "card_status": c["status"], "daily_limit_fen": c["daily_limit_fen"]}
+
+
+def _sub_bind(bank, cid, args):
+    x = bank._own(bank.subs, args["subscription_id"], cid, "Subscription")
+    return {"name": x["name"], "amount_fen": x["amount_fen"], "status": x["status"]}
+
+
+def _product_card(label):
+    def f(bank, cid, args):
+        p = bank.products.get(args["product_id"])
+        if p is None:
+            raise BankError("NOT_FOUND", "Product not found")
+        d = {"action": label, "product": p["name"], "product_en": p["name_en"], "risk": f"R{p['risk']}",
+             "amount_cny": args["amount"], "reference_yield_percent": p["ref_yield"],
+             "note": "Past yield does not guarantee future returns"}
+        if label == "Buy product":
+            d["min_amount_cny"] = cny(p["min_fen"])
+        return d
+    return f
+
+
 def build_registry() -> dict[str, ToolSpec]:
     T: list[ToolSpec] = [
         ToolSpec("get_balance", "Balance of the customer's account.",
@@ -85,7 +120,31 @@ def build_registry() -> dict[str, ToolSpec]:
         ToolSpec("list_subscriptions", "List subscriptions and auto-debits.",
                  {"status": {"type": "string", "enum": ["active", "paused", "cancelled"]}},
                  lambda b, c, a, k: {"subscriptions": b.list_subscriptions(c, a.get("status"))},
+                 untrusted_outputs=("name",),
+                 card_fn=lambda b, c, a: {"action": "View subscriptions",
+                                          "effect": "Read-only: lists your subscriptions, amounts and next charge dates"}),
+        ToolSpec("resolve_subscription", "Fuzzy-match one of the customer's subscriptions by name; ids and names only.",
+                 {"query": {"type": "string", "required": True, "maxlen": 60},
+                  "action": {"type": "string", "enum": ["pause", "cancel", "resume"]}},
+                 lambda b, c, a, k: {"candidates": b.find_subscriptions(c, a["query"], a.get("action"))},
                  untrusted_outputs=("name",)),
+        ToolSpec("list_products", "Wealth product catalogue with the customer's risk profile and suitability flags.", {},
+                 lambda b, c, a, k: b.list_products(c)),
+        ToolSpec("resolve_product", "Fuzzy-match a wealth product by name; ids and names only.",
+                 {"query": {"type": "string", "required": True, "maxlen": 60}},
+                 lambda b, c, a, k: {"candidates": b.find_products(c, a["query"])}),
+        ToolSpec("get_holdings", "The customer's wealth holdings.", {},
+                 lambda b, c, a, k: {"holdings": b.get_holdings(c)}),
+        ToolSpec("buy_product", "Buy a wealth product (amount from the user's own message).",
+                 {"product_id": {"type": "string", "required": True, "pattern": r"F\d{3}"},
+                  "amount": {"type": "money", "required": True}},
+                 lambda b, c, a, k: b.buy_product(c, a["product_id"], to_fen(a["amount"]), k),
+                 state_changing=True, card_fn=_product_card("Buy product")),
+        ToolSpec("redeem_product", "Redeem (sell) part or all of a wealth holding.",
+                 {"product_id": {"type": "string", "required": True, "pattern": r"F\d{3}"},
+                  "amount": {"type": "money", "required": True}},
+                 lambda b, c, a, k: b.redeem_product(c, a["product_id"], to_fen(a["amount"]), k),
+                 state_changing=True, card_fn=_product_card("Redeem product")),
         ToolSpec("transfer", "Transfer money to a saved payee (payee_id from resolve_payee).",
                  {"payee_id": {"type": "string", "required": True, "pattern": PID},
                   "amount": {"type": "money", "required": True},
@@ -94,7 +153,7 @@ def build_registry() -> dict[str, ToolSpec]:
                  state_changing=True, context_fn=_transfer_ctx, card_fn=_transfer_card),
         ToolSpec("pause_or_cancel_subscription", "Pause or cancel a subscription.",
                  {"subscription_id": {"type": "string", "required": True, "pattern": SID},
-                  "action": {"type": "string", "required": True, "enum": ["pause", "cancel"]}},
+                  "action": {"type": "string", "required": True, "enum": ["pause", "cancel", "resume"]}},
                  lambda b, c, a, k: b.subscription_action(c, a["subscription_id"], a["action"]),
                  state_changing=True, card_fn=_sub_card),
         ToolSpec("apply_virtual_card", "Apply for a virtual card.", {},
@@ -123,4 +182,9 @@ def build_registry() -> dict[str, ToolSpec]:
         ToolSpec("change_security_settings", "Change security settings (never executed).",
                  {"setting": {"type": "string", "maxlen": 60}}, lambda b, c, a, k: {}, state_changing=True),
     ]
-    return {t.name: t for t in T}
+    reg = {t.name: t for t in T}
+    reg["transfer"].bind_fn = _transfer_bind
+    reg["pause_or_cancel_subscription"].bind_fn = _sub_bind
+    for name in ("freeze_card", "unfreeze_card", "report_card_lost", "set_card_limit"):
+        reg[name].bind_fn = _card_bind
+    return reg

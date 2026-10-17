@@ -50,3 +50,13 @@ main{flex:1;display:grid;grid-template-columns:minmax(0,3fr) minmax(300px,2fr);g
 .ev .n{color:var(--muted);font-variant-numeric:tabular-nums;min-width:22px}
 #chain{margin-top:8px;font-size:12px;color:var(--muted)}#chain.ok b{color:var(--green)}#chain.bad b{color:var(--red)}
 @media (max-width:900px){main{grid-template-columns:1fr;overflow:auto}#inspector{min-height:260px}body{height:auto;min-height:100vh}}
+
+.plancard{width:min(96%,540px)}
+.steps{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.srow{display:flex;gap:8px;align-items:flex-start;font-size:13.5px}
+.sdot{width:10px;height:10px;border-radius:50%;margin-top:6px;background:var(--line);flex:none}
+.sdot.succeeded{background:var(--green)}.sdot.awaiting_confirmation{background:var(--yellow)}.sdot.running{background:var(--accent)}
+.sdot.failed{background:var(--red)}.sdot.skipped,.sdot.cancelled{background:var(--muted);opacity:.55}
+.sname{flex:1;min-width:0}.sname small{color:var(--muted)}
+.sstate{font-size:11px;color:var(--muted);white-space:nowrap}
+.srow .tier{font-size:10px}

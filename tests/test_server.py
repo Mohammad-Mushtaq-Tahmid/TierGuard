@@ -49,7 +49,9 @@ class ServerTests(unittest.TestCase):
         st, h, body = self.s.get("/")
         self.assertEqual(st, 200)
         self.assertIn(b"TierGuard", body)
-        self.assertEqual(h["Content-Security-Policy"], "default-src 'self'")
+        self.assertTrue(h["Content-Security-Policy"].startswith("default-src 'self'"))
+        self.assertIn("frame-ancestors 'none'", h["Content-Security-Policy"])
+        self.assertEqual(h["X-Frame-Options"], "DENY")
         self.assertEqual(h["X-Content-Type-Options"], "nosniff")
         self.assertIn("javascript", self.s.get("/app.js")[1]["Content-Type"])
         self.assertIn("text/css", self.s.get("/style.css")[1]["Content-Type"])
@@ -138,6 +140,43 @@ class ServerTests(unittest.TestCase):
         self.s = Srv([J("balance")])
         _, d = self.s.post("/api/chat", {"sid": "forged-id", "message": "余额"})
         self.assertNotEqual(d["sid"], "forged-id")
+
+
+class PlanOverHttp(unittest.TestCase):
+    def tearDown(self):
+        self.s.close()
+
+    def test_savings_plan_through_the_api(self):
+        self.s = Srv([J("savings_review")])
+        _, d = self.s.post("/api/chat", {"message": "帮我省点钱，停掉用得少的订阅"})
+        sid = d["sid"]
+        self.assertEqual(d["reply"]["kind"], "plan")
+        self.assertEqual([x["id"] for x in d["plan"]["steps"]], ["S1", "S2", "S3", "S4", "S5"])
+        self.assertEqual(d["plan"]["stage"], "preview")
+        _, d2 = self.s.post("/api/chat", {"sid": sid, "action": "confirm"})
+        self.assertEqual(d2["reply"]["card"]["tier"], "yellow")
+        self.assertEqual(d2["plan"]["stage"], "executing")
+        self.assertTrue(any("Plan approval covers" in e["text"] for e in d2["events"]))
+        _, d3 = self.s.post("/api/chat", {"sid": sid, "action": "skip"})
+        self.assertEqual({x["id"]: x["state"] for x in d3["plan"]["steps"]}["S4.1"], "skipped")
+        _, d4 = self.s.post("/api/chat", {"sid": sid, "action": "human"})
+        self.assertIn("人工", d4["reply"]["message"])
+        self.assertEqual(d4["plan"]["stage"], "cancelled")
+
+    def test_offline_replay_miss_has_a_clear_message(self):
+        import tempfile
+        from tierguard.llm.adapter import ReplayCache
+        with tempfile.TemporaryDirectory() as tmp:
+            self.s = Srv.__new__(Srv)
+            llm = ReplayCache(ScriptedLLM([]), tmp, "replay")
+            self.s.llm = llm
+            self.s.srv = make_server(llm, port=0, mode="replay")
+            self.s.base = f"http://127.0.0.1:{self.s.srv.server_port}"
+            threading.Thread(target=self.s.srv.serve_forever, daemon=True).start()
+            _, d = self.s.post("/api/chat", {"message": "查余额"})
+            self.assertEqual(d["reply"]["kind"], "error")
+            self.assertIn("Offline replay mode", d["reply"]["message"])
+            self.assertIn("TG_API_KEY", d["reply"]["message"])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 The LLM never sees or edits this; policy is data (tiers.yaml) plus a few lines of code."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,8 +28,9 @@ class Decision:
 class Policy:
     def __init__(self, path: str | None = None):
         path = path or str(Path(__file__).with_name("tiers.yaml"))
-        with open(path, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
+        raw = Path(path).read_bytes()
+        self.sha256 = hashlib.sha256(raw).hexdigest()      # logged at start-up: proves which policy was in force
+        cfg = yaml.safe_load(raw.decode("utf-8"))
         self.params = cfg["params"]
         self.tools = cfg["tools"]
 
