@@ -91,6 +91,45 @@ class LLMAdapter(unittest.TestCase):
         finally:
             srv.shutdown()
 
+    def _status_server(self, code, body):
+        class H(BaseHTTPRequestHandler):
+            hits = 0
+            def do_POST(self):
+                H.hits += 1
+                self.rfile.read(int(self.headers["Content-Length"]))
+                b = json.dumps(body).encode()
+                self.send_response(code); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def log_message(self, *a): pass
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv, H
+
+    def test_rejected_key_fails_fast_with_the_providers_message(self):
+        srv, H = self._status_server(401, {"error": {"message": "invalid api key"}})
+        waits = []
+        try:
+            c = OpenAICompatClient(f"http://127.0.0.1:{srv.server_port}/v1", "k", "m", sleep=waits.append)
+            with self.assertRaises(RuntimeError) as cm:
+                c.chat([{"role": "user", "content": "x"}])
+            self.assertIn("HTTP 401", str(cm.exception))
+            self.assertIn("invalid api key", str(cm.exception))
+            self.assertEqual((H.hits, waits), (1, []))                          # not retried, no waiting
+        finally:
+            srv.shutdown()
+
+    def test_persistent_429_reports_the_reason_after_backing_off(self):
+        srv, H = self._status_server(429, {"error": {"message": "daily quota used up"}})
+        waits = []
+        try:
+            c = OpenAICompatClient(f"http://127.0.0.1:{srv.server_port}/v1", "k", "m", sleep=waits.append)
+            with self.assertRaises(RuntimeError) as cm:
+                c.chat([{"role": "user", "content": "x"}])
+            self.assertIn("HTTP 429", str(cm.exception))
+            self.assertIn("daily quota used up", str(cm.exception))
+            self.assertEqual(waits, [8, 20, 40, 60])
+        finally:
+            srv.shutdown()
+
     def test_scripted(self):
         self.assertEqual(ScriptedLLM(["a", "b"]).chat([]), "a")
 

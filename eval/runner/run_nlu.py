@@ -65,10 +65,18 @@ def main():
             rows.append((c, "PASS" if not problems else "FAIL", problems, res.notes))
         except Exception as e:
             errors_in_row += 1
-            rows.append((c, "NOT_RUN", [repr(e)[:80]], []))
+            rows.append((c, "NOT_RUN", [str(e)[:200]], []))
+            print(f"NOT_RUN  {c['id']} {c['utterance'][:30]}  -> {str(e)[:200]}")
             if errors_in_row >= 2:
-                print("Provider keeps rate-limiting. Stopping; re-run later (finished answers are cached).")
+                why = str(e)
+                if "401" in why or "403" in why:
+                    print("STOP: the provider REJECTED the key (wrong, deleted, or pasted incompletely). Make a new key.")
+                elif "429" in why:
+                    print("STOP: the provider says 'too many requests' (free-tier limit or daily quota). Wait 10+ minutes, then re-run.")
+                else:
+                    print("STOP: cannot get answers from the provider (see the message above). Finished answers are cached; re-run later.")
                 break
+            continue
         print(f"{rows[-1][1]:8} {c['id']} {c['utterance'][:40]}")
         if time.time() - t0 > 0.5:
             time.sleep(6)  # only pause after real network calls

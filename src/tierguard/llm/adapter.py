@@ -55,15 +55,19 @@ class OpenAICompatClient:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
                     return json.loads(r.read())["choices"][0]["message"]["content"]
             except urllib.error.HTTPError as e:
-                last = e
+                try:
+                    detail = e.read().decode("utf-8", "replace")[:200]   # the provider's own explanation
+                except Exception:
+                    detail = ""
+                last = RuntimeError(f"HTTP {e.code} {detail}".strip())
                 if e.code == 429 or e.code in (500, 502, 503):
                     self._sleep([8, 20, 40, 60][min(attempt, 3)])  # free tier: wait for the open slot
                     continue
-                raise
+                raise last
             except (TimeoutError, urllib.error.URLError) as e:
                 last = e
                 self._sleep(20)  # the timed-out request may still hold the single free slot
-        raise RuntimeError(f"LLM request failed after {self.retries} attempts: {last!r}")
+        raise RuntimeError(f"LLM request failed after {self.retries} attempts: {last}")
 
 
 class ReplayCache:
