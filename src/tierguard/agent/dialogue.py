@@ -269,7 +269,7 @@ class Dialogue:
             amts = extract_amounts(text)
             if len(amts) != 1:
                 return None
-            return transfer_flow(self.g, self.s, lang, st["payee_query"], amts[0], [])
+            return transfer_flow(self.g, self.s, lang, st["payee_query"], amts[0], [], heard=st.get("heard"))
         if st["type"] == "need_payee":
             q = re.sub(r"^(转给|转账给|给|to|send to)\s*", "", text.strip(), flags=re.I)[:60]
             if not q or extract_amounts(text) or len(q) > 20:
@@ -304,7 +304,7 @@ class Dialogue:
                 return TurnResult("clarify", _say(lang, "您想选择哪个产品？（例如：货币基金）", "Which product? (for example: money market)"),
                                   clarify_state={"type": "need_product", "kind": st["kind"],
                                                  "amount": str(amount) if amount is not None else None, "whole": whole})
-            return wealth_flow(self.g, self.s, lang, st["kind"], st["target_query"], amount, whole, [])
+            return wealth_flow(self.g, self.s, lang, st["kind"], st["target_query"], amount, whole, [], heard=st.get("heard"))
         if st["type"] == "need_product":
             q = text.strip()[:60]
             if not q or len(q) > 24:

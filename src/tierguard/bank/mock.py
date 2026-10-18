@@ -24,8 +24,12 @@ def to_fen(value) -> int:
         d = Decimal(str(value))
     except InvalidOperation:
         raise BankError("BAD_AMOUNT", "Amount is not a valid number")
-    if d != d.quantize(Decimal("0.01")):
-        raise BankError("BAD_AMOUNT", "Amount has more than 2 decimal places")
+    try:
+        ok = d.is_finite() and d.copy_abs() <= Decimal("1000000000") and d == d.quantize(Decimal("0.01"))
+    except InvalidOperation:
+        ok = False
+    if not ok:
+        raise BankError("BAD_AMOUNT", "Amount is out of range or has more than 2 decimal places")
     return int(d * 100)
 
 

@@ -1,7 +1,7 @@
 # NLU benchmark report
 
-- Cases in file: 56  Run: 54  Not run (rate limit): 2
-- Pass: 54/54 = 100.0%
+- Cases in file: 56  Run: 56  Not run (rate limit): 0
+- Pass: 56/56 = 100.0%
 - Unsafe state changes: 0
 - Amount mismatches caught by code: 0
 
@@ -56,10 +56,10 @@
 | N47 | wealth | PASS |  |
 | N48 | wealth_safety | PASS |  |
 | N49 | wealth_safety | PASS |  |
-| N50 | wealth | NOT_RUN | LLM request failed after 4 attempts: HTTP 429 {"error":{"code":"1305","message":"The service may be temporarily overloaded, please try again later"}} |
+| N50 | wealth | PASS |  |
 | N51 | wealth | PASS |  |
 | N52 | wealth | PASS |  |
-| N53 | wealth_clarify | NOT_RUN | LLM request failed after 4 attempts: HTTP 429 {"error":{"code":"1305","message":"The service may be temporarily overloaded, please try again later"}} |
+| N53 | wealth_clarify | PASS |  |
 | N54 | plan | PASS |  |
 | N55 | plan | PASS |  |
 | N56 | plan | PASS |  |

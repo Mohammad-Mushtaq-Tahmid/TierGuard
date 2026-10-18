@@ -44,7 +44,15 @@ def run_nlu_case(case, llm):
     return res, check(case, res, g), g
 
 
+def preflight():
+    import os
+    miss = [k for k in ("TG_PROVIDER", "TG_MODEL", "TG_API_KEY") if not os.environ.get(k)]
+    if miss:
+        print("NOTE: not set in this terminal: " + ", ".join(miss) + ". Only already-recorded answers can be used until you set them.")
+
+
 def main():
+    preflight()
     from tierguard.llm.adapter import OpenAICompatClient, ReplayCache
     llm = ReplayCache(OpenAICompatClient.from_env(), str(ROOT / "llm_cache"), "record")
     cases = yaml.safe_load((ROOT / "eval/tasks/utterances.yaml").read_text(encoding="utf-8"))
@@ -75,6 +83,8 @@ def main():
                     print("STOP: the provider says 'too many requests' (free-tier limit or daily quota). Wait 10+ minutes, then re-run.")
                 else:
                     print("STOP: cannot get answers from the provider (see the message above). Finished answers are cached; re-run later.")
+                    if "10061" in why or "refused" in why.lower():
+                        print("HINT: the program tried a model server on this computer. TG_PROVIDER is probably not set in this terminal (use: zai).")
                 break
             continue
         print(f"{rows[-1][1]:8} {c['id']} {c['utterance'][:40]}")

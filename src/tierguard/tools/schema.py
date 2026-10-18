@@ -5,8 +5,10 @@ import datetime as dt
 import re
 from decimal import Decimal, InvalidOperation
 
-SMUGGLED = {"customer_id", "role", "user_id", "account_owner", "principal", "session_id", "tier"}
-_BAD_CHARS = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff\u202a-\u202e\u0000-\u001f\u007f]")
+SMUGGLED = {"customer_id", "role", "user_id", "account_owner", "principal", "session_id", "tier", "owner", "admin",
+            "is_admin", "privilege", "permissions", "scope", "skip_confirmation", "bypass", "override", "confirmed", "otp", "token"}
+# same family as agent/sanitize.py: control, zero-width, bidi marks/overrides/isolates, soft hyphen, invisible operators
+_BAD_CHARS = re.compile("[\u0000-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\ufff9-\ufffb]")
 
 
 class ArgError(Exception):
@@ -49,9 +51,17 @@ def validate(params: dict, args) -> dict:
                 d = Decimal(str(v).strip())
             except InvalidOperation:
                 raise ArgError("BAD_AMOUNT", f"'{name}' is not a valid amount")
-            if not d.is_finite() or d != d.quantize(Decimal("0.01")):
+            if not d.is_finite():
+                raise ArgError("BAD_AMOUNT", f"'{name}' is not a finite number")
+            if d.copy_abs() > Decimal("10000000"):                       # range first: huge exponents must not reach quantize()
+                raise ArgError("BAD_AMOUNT", f"'{name}' is out of range")
+            try:
+                two_decimals = d == d.quantize(Decimal("0.01"))
+            except InvalidOperation:
+                two_decimals = False
+            if not two_decimals:
                 raise ArgError("BAD_AMOUNT", f"'{name}' must have at most 2 decimals")
-            if d < Decimal("0.01") or d > Decimal("10000000"):
+            if d < Decimal("0.01"):
                 raise ArgError("BAD_AMOUNT", f"'{name}' is out of range")
             out[name] = f"{d:.2f}"  # canonical: 500, 500.0, "500.00" all hash the same
         elif t == "date":

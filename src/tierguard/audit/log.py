@@ -21,6 +21,7 @@ class AuditLog:
 
     def append(self, session_id: str, event: str, data: dict) -> dict:
         prev = self.entries[-1]["hash"] if self.entries else self.GENESIS
+        data = json.loads(canonical(data))      # freeze: later edits to the caller's objects must not alter a hashed entry
         body = {"seq": len(self.entries), "ts": round(self.clock(), 3), "session": session_id,
                 "event": event, "data": data, "prev": prev}
         body["hash"] = hashlib.sha256((prev + canonical(body)).encode()).hexdigest()

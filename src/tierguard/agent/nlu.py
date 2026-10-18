@@ -159,7 +159,7 @@ def plan_turn(gateway, session, llm, utterance: str) -> TurnResult:
         if not intent["payee_query"]:
             return TurnResult("clarify", _say(lang, "要转给谁？", "Who should I send it to?"), notes=notes,
                               clarify_state={"type": "need_payee", "amount": str(amount)})
-        return transfer_flow(gateway, session, lang, intent["payee_query"], amount, notes)
+        return transfer_flow(gateway, session, lang, intent["payee_query"], amount, notes, heard=utterance)
 
     if it in ("card_lost", "freeze_card"):
         rc = gateway.call(session, "get_cards", {})
@@ -178,7 +178,7 @@ def plan_turn(gateway, session, llm, utterance: str) -> TurnResult:
             q = _say(lang, "您想" + ("取消" if action == "cancel" else "暂停") + "哪一个订阅？",
                      f"Which subscription do you want to {action}?")
             return TurnResult("clarify", q, notes=notes, clarify_state={"type": "need_target", "action": action})
-        return subscription_flow(gateway, session, lang, intent["target_query"], action, notes)
+        return subscription_flow(gateway, session, lang, intent["target_query"], action, notes, heard=utterance)
 
     if it == "savings_review":
         from tierguard.agent.planner import SavingsPlan      # imported here: planner builds on this module
@@ -207,14 +207,14 @@ def plan_turn(gateway, session, llm, utterance: str) -> TurnResult:
         amount = amounts[0] if amounts else None
         if amount is None and not whole:
             return TurnResult("clarify", _say(lang, "金额是多少？", "How much?"), notes=notes,
-                              clarify_state={"type": "need_amount_wealth", "kind": it, "target_query": intent["target_query"]})
+                              clarify_state={"type": "need_amount_wealth", "kind": it, "target_query": intent["target_query"], "heard": utterance})
         if not intent["target_query"]:
             verb = _say(lang, "买入" if it == "wealth_buy" else "赎回", "buy" if it == "wealth_buy" else "redeem")
             return TurnResult("clarify", _say(lang, f"您想{verb}哪个产品？（例如：货币基金、短债基金）",
                                              f"Which product do you want to {verb}? (for example: money market, short bond)"),
                               notes=notes, clarify_state={"type": "need_product", "kind": it,
                                                           "amount": str(amount) if amount is not None else None, "whole": whole})
-        return wealth_flow(gateway, session, lang, it, intent["target_query"], amount, whole, notes)
+        return wealth_flow(gateway, session, lang, it, intent["target_query"], amount, whole, notes, heard=utterance)
 
     return TurnResult("clarify", _say(lang, "这个请求我在这里办不了。我可以帮您查余额、分析消费、转账、管理银行卡和订阅、了解理财，例如“查余额”“给妈妈转500”“把爱奇艺会员停了”“帮我省点钱”。",
                                      "I can't help with that here. I can check your balance, analyse spending, send transfers, manage cards and subscriptions and explain wealth products, for example 'what is my balance', 'send 500 to mom', 'cancel my iqiyi subscription' or 'help me save money'."),
@@ -232,13 +232,20 @@ ZH_WARN = {"FIRST_TIME_PAYEE": "这是您第一次向该收款人转账。"}
 EN_WARN = {"FIRST_TIME_PAYEE": "This is your first transfer to this payee."}
 
 
-def transfer_flow(gateway, session, lang, payee_query, amount, notes):
+def _q(query, heard):
+    """Echo a name back only if the USER wrote it. A string the model made up is never shown (it could be phishing text).
+    heard=None means the caller guarantees the query is the user's own text."""
+    return query if (heard is None or (query and query.casefold() in heard.casefold())) else None
+
+
+def transfer_flow(gateway, session, lang, payee_query, amount, notes, heard=None):
     """Resolve the payee against real records, then build the confirmation card. Shared by first turns and follow-ups."""
     rp = gateway.call(session, "resolve_payee", {"query": payee_query})
     cands = (rp.data or {}).get("candidates", []) if rp.status == "executed" else []
     if not cands:
-        return TurnResult("clarify", _say(lang, f"没有找到收款人“{payee_query}”，请确认姓名。",
-                                         f"I could not find a saved payee matching '{payee_query}'."), notes=notes,
+        shown = _q(payee_query, heard)
+        return TurnResult("clarify", _say(lang, f"没有找到收款人“{shown}”，请确认姓名。" if shown else "没有找到这位收款人，请确认姓名。",
+                                         f"I could not find a saved payee matching '{shown}'." if shown else "I could not find that payee in your saved payees."), notes=notes,
                           clarify_state={"type": "need_payee", "amount": str(amount)})
     if len(cands) > 1 and cands[0]["score"] == cands[1]["score"]:
         tied = [c for c in cands if c["score"] == cands[0]["score"]]
@@ -255,15 +262,16 @@ SUB_VERB = {"cancel": ("取消", "Cancel"), "pause": ("暂停", "Pause"), "resum
 ALL_WORDS = ("全部", "所有", "全额", "all", "everything")
 
 
-def subscription_flow(gateway, session, lang, target_query, action, notes):
+def subscription_flow(gateway, session, lang, target_query, action, notes, heard=None):
     """Resolve the subscription against the customer's own records, then build the confirmation card."""
     verb_zh, verb_en = ("取消", "cancel") if action == "cancel" else ("暂停", "pause")
     rs = gateway.call(session, "resolve_subscription", {"query": target_query, "action": action})
     cands = (rs.data or {}).get("candidates", []) if rs.status == "executed" else []
     if not cands:
-        return TurnResult("clarify", _say(lang, f"没有找到可以{verb_zh}的订阅“{target_query}”，请换个说法。",
-                                         f"I could not find a subscription matching '{target_query}' that can be {verb_en}led."
-                                         if action == "cancel" else f"I could not find an active subscription matching '{target_query}'."),
+        shown = _q(target_query, heard)
+        zh = f"没有找到可以{verb_zh}的订阅“{shown}”，请换个说法。" if shown else f"没有找到可以{verb_zh}的订阅，请换个说法。"
+        en = (f"I could not find a subscription matching '{shown}' that can be {verb_en}led." if action == "cancel" else f"I could not find an active subscription matching '{shown}'.") if shown else "I could not find a matching subscription."
+        return TurnResult("clarify", _say(lang, zh, en),
                           notes=notes, clarify_state={"type": "need_target", "action": action})
     if len(cands) > 1 and cands[0]["score"] == cands[1]["score"]:
         tied = [c for c in cands if c["score"] == cands[0]["score"]]
@@ -280,14 +288,15 @@ def _pname(p, lang):
     return p["name"] if lang == "zh" else p["name_en"]
 
 
-def wealth_flow(gateway, session, lang, kind, target_query, amount, whole, notes):
+def wealth_flow(gateway, session, lang, kind, target_query, amount, whole, notes, heard=None):
     """Resolve the product against the catalogue, then run the suitability and holding checks in code."""
     rp = gateway.call(session, "resolve_product", {"query": target_query})
     cands = (rp.data or {}).get("candidates", []) if rp.status == "executed" else []
     state = {"kind": kind, "amount": str(amount) if amount is not None else None, "whole": whole}
     if not cands:
-        return TurnResult("clarify", _say(lang, f"没有找到产品“{target_query}”。您可以问我“有哪些理财产品”。",
-                                         f"I could not find a product matching '{target_query}'. Ask me which products are available."),
+        shown = _q(target_query, heard)
+        return TurnResult("clarify", _say(lang, (f"没有找到产品“{shown}”。" if shown else "没有找到该产品。") + "您可以问我“有哪些理财产品”。",
+                                         (f"I could not find a product matching '{shown}'. " if shown else "I could not find that product. ") + "Ask me which products are available."),
                           notes=notes, clarify_state={"type": "need_product", **state})
     if len(cands) > 1 and cands[0]["score"] == cands[1]["score"]:
         tied = [c for c in cands if c["score"] == cands[0]["score"]]

@@ -7,7 +7,10 @@ import re
 import unicodedata
 
 _INVISIBLE = re.compile(
-    "[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\ufff9-\ufffb]")
+    "[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\ufff9-\ufffb]")
+
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")      # terminal colour/cursor codes such as ESC[31m
 
 
 def count_invisible(text: str) -> int:
@@ -15,4 +18,4 @@ def count_invisible(text: str) -> int:
 
 
 def sanitize(text: str) -> str:
-    return _INVISIBLE.sub("", unicodedata.normalize("NFKC", text)).strip()
+    return _INVISIBLE.sub("", _ANSI.sub("", unicodedata.normalize("NFKC", text))).strip()
