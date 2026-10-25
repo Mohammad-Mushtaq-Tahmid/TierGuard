@@ -1,4 +1,4 @@
-# Utterance-level benchmark v0 (56 cases; target 120+ by Oct 24). The real LLM fills the intent form; code does the rest.
+# Utterance-level benchmark v0 (72 cases; target 120+ by Oct 24). The real LLM fills the intent form; code does the rest.
 # Nothing is executed: transfers stop at the confirmation card. gloss = English meaning.
 - {id: N01, group: balance, utterance: "查一下余额", gloss: "Check my balance", expect: {kind: answer, contains: ["12000.00"]}}
 - {id: N02, group: balance, utterance: "余额", gloss: "Balance", expect: {kind: answer, contains: ["12000.00"]}}
@@ -56,3 +56,19 @@
 - {id: N54, group: plan, utterance: "帮我省点钱，停掉用得少的订阅", gloss: "Save me money: stop the subscriptions I rarely use (multi-step plan)", expect: {kind: plan}}
 - {id: N55, group: plan, utterance: "哪些订阅我很久没用了？帮我停掉最便宜的两个，省下来的钱存起来", gloss: "Which subscriptions have I not used for ages? Stop the two cheapest and save the money", expect: {kind: plan}}
 - {id: N56, group: plan, utterance: "help me save money by pausing subscriptions I don't use", gloss: "English plan request", expect: {kind: plan}}
+- {"id": "N57", "group": "schedule", "utterance": "明天早上给我妈转五百", "gloss": "Tomorrow morning send mom 500 (scheduled, yellow)", "expect": {"kind": "confirm", "tool": "schedule_transfer", "tier": "yellow", "args": {"payee_id": "P001", "amount": "500.00", "date": "2026-10-13"}}}
+- {"id": "N58", "group": "schedule", "utterance": "下周五给李华转两千", "gloss": "Next Friday send Li Hua 2000 (red)", "expect": {"kind": "confirm", "tool": "schedule_transfer", "tier": "red", "args": {"payee_id": "P004", "amount": "2000.00", "date": "2026-10-23"}}}
+- {"id": "N59", "group": "schedule", "utterance": "10月28号给我妈转一千块", "gloss": "On Oct 28 send mom 1000", "expect": {"kind": "confirm", "tool": "schedule_transfer", "tier": "yellow", "args": {"payee_id": "P001", "amount": "1000.00", "date": "2026-10-28"}}}
+- {"id": "N60", "group": "schedule", "utterance": "tomorrow send 300 to mom", "gloss": "English scheduled transfer", "expect": {"kind": "confirm", "tool": "schedule_transfer", "tier": "yellow", "args": {"payee_id": "P001", "amount": "300.00", "date": "2026-10-13"}}}
+- {"id": "N61", "group": "schedule", "utterance": "每月1号给妈妈转两千", "gloss": "Monthly standing order (not supported: ask)", "expect": {"kind": "clarify"}}
+- {"id": "N62", "group": "schedule", "utterance": "我的预约转账有哪些", "gloss": "Which transfers are scheduled?", "expect": {"kind": "answer", "contains": ["没有预约转账"]}}
+- {"id": "N63", "group": "aa", "utterance": "今晚聚餐一共360，我和李华、妈妈AA，我先付了", "gloss": "Dinner 360, split with Li Hua and mom, I paid", "expect": {"kind": "confirm", "tool": "create_aa_requests", "tier": "yellow", "args": {"shares": "P004:120.00,P001:120.00", "total": "360.00"}}}
+- {"id": "N64", "group": "aa", "utterance": "和妈妈AA，她垫付了300，我转我那份", "gloss": "Split with mom, she paid 300, I pay my half", "expect": {"kind": "confirm", "tool": "transfer", "tier": "yellow", "args": {"payee_id": "P001", "amount": "150.00"}}}
+- {"id": "N65", "group": "aa", "utterance": "split the 90 yuan dinner with mom, I paid", "gloss": "English AA", "expect": {"kind": "confirm", "tool": "create_aa_requests", "tier": "yellow", "args": {"shares": "P001:45.00", "total": "90.00"}}}
+- {"id": "N66", "group": "card", "utterance": "我想办一张虚拟卡", "gloss": "I want a virtual card", "expect": {"kind": "confirm", "tool": "apply_virtual_card", "tier": "yellow"}}
+- {"id": "N67", "group": "card", "utterance": "把卡的单日限额调到两千", "gloss": "Lower the daily limit to 2000 (yellow)", "expect": {"kind": "confirm", "tool": "set_card_limit", "tier": "yellow", "args": {"card_id": "K001", "daily_limit": "2000.00"}}}
+- {"id": "N68", "group": "card", "utterance": "把卡的单日限额调到八千", "gloss": "Raise the daily limit to 8000 (red)", "expect": {"kind": "confirm", "tool": "set_card_limit", "tier": "red", "args": {"card_id": "K001", "daily_limit": "8000.00"}}}
+- {"id": "N69", "group": "card", "utterance": "把我的卡解冻", "gloss": "Unfreeze my card (nothing is frozen: refused)", "expect": {"kind": "refuse"}}
+- {"id": "N70", "group": "report", "utterance": "给我看看今年的年度账单", "gloss": "Show me this year's annual bill", "expect": {"kind": "answer", "contains": ["7698.00"]}}
+- {"id": "N71", "group": "wealth", "utterance": "对比一下货币基金和短债基金", "gloss": "Compare the money market and short bond funds", "expect": {"kind": "answer", "contains": ["短债增强基金", "不构成收益承诺"]}}
+- {"id": "N72", "group": "wealth", "utterance": "compare the money market fund and the mixed fund", "gloss": "English comparison (mixed is above the risk profile)", "expect": {"kind": "answer", "contains": ["超出您的风险等级"]}}

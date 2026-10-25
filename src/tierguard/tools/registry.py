@@ -4,6 +4,7 @@ Arithmetic and aggregation live here in code, never in the LLM."""
 from __future__ import annotations
 
 import hashlib
+import datetime as dt
 from dataclasses import dataclass
 from typing import Callable
 
@@ -94,6 +95,63 @@ def _product_card(label):
     return f
 
 
+def _parse_shares(text: str) -> list[tuple[str, int]]:
+    out = []
+    for part in text.split(","):
+        pid, amt = part.split(":")
+        out.append((pid, to_fen(amt)))
+    return out
+
+
+def _schedule_ctx(bank, cid, args, params):
+    when = dt.date.fromisoformat(args["date"])
+    if when <= bank.today or (when - bank.today).days > 365:      # refuse BEFORE a confirmation card is shown
+        raise BankError("BAD_DATE", "The scheduled date must be after today and within a year")
+    amt = to_fen(args["amount"])
+    planned = bank.sched_total_fen(cid, args["date"])
+    return {"amount_fen": amt, "projected_daily_fen": planned + amt,
+            "projected_over_limit": planned + amt > params["yellow_daily_transfer_limit_fen"],
+            "new_payee": bank.payee_age_days(cid, args["payee_id"]) < 1}
+
+
+def _schedule_card(bank, cid, args):
+    p = bank.get_payee(cid, args["payee_id"])
+    return {"action": "Schedule transfer", "payee_name": p["name"], "payee_account_masked": mask(p["no"]),
+            "amount_cny": args["amount"], "date": args["date"], "memo": args.get("memo", ""),
+            "effect": "Runs automatically on that date if funds and limits still allow"}
+
+
+def _cancel_sched_card(bank, cid, args):
+    x = bank._own(bank.scheduled, args["schedule_id"], cid, "Scheduled transfer")
+    return {"action": "Cancel scheduled transfer", "payee_name": bank.payees[x["payee_id"]]["name"],
+            "amount_cny": cny(x["amount_fen"]), "date": x["date"], "current_status": x["status"]}
+
+
+def _cancel_sched_bind(bank, cid, args):
+    x = bank._own(bank.scheduled, args["schedule_id"], cid, "Scheduled transfer")
+    return {"status": x["status"], "amount_fen": x["amount_fen"], "date": x["date"], "payee_account_fp": _fp(bank.payees[x["payee_id"]]["no"])}
+
+
+def _aa_ctx(bank, cid, args, params):
+    shares = _parse_shares(args["shares"])
+    if len({pid for pid, _ in shares}) != len(shares) or any(a <= 0 for _, a in shares) or sum(a for _, a in shares) > to_fen(args["total"]):
+        raise BankError("BAD_SHARES", "The shares must be positive, belong to different people and not exceed the bill")
+    for pid, _ in shares:
+        bank.get_payee(cid, pid)                                  # every person must be one of the customer's own saved payees
+    return {}
+
+
+def _aa_card(bank, cid, args):
+    shares = _parse_shares(args["shares"])
+    people = ", ".join(f"{bank.get_payee(cid, pid)['name']} {cny(a)}" for pid, a in shares)
+    return {"action": "Send AA payment requests", "total_cny": args["total"], "people": people, "note": args.get("note", ""),
+            "effect": "Each person is asked for their share. No money leaves your account."}
+
+
+def _aa_bind(bank, cid, args):
+    return {"payees": [(pid, _fp(bank.get_payee(cid, pid)["no"])) for pid, _ in _parse_shares(args["shares"])]}
+
+
 def build_registry() -> dict[str, ToolSpec]:
     T: list[ToolSpec] = [
         ToolSpec("get_balance", "Balance of the customer's account.",
@@ -145,6 +203,28 @@ def build_registry() -> dict[str, ToolSpec]:
                   "amount": {"type": "money", "required": True}},
                  lambda b, c, a, k: b.redeem_product(c, a["product_id"], to_fen(a["amount"]), k),
                  state_changing=True, card_fn=_product_card("Redeem product")),
+        ToolSpec("schedule_transfer", "Schedule a transfer to a saved payee on a future date (one-time).",
+                 {"payee_id": {"type": "string", "required": True, "pattern": PID},
+                  "amount": {"type": "money", "required": True},
+                  "date": {"type": "date", "required": True},
+                  "memo": {"type": "string", "maxlen": 50}},
+                 lambda b, c, a, k: b.schedule_transfer(c, a["payee_id"], to_fen(a["amount"]), a["date"], a.get("memo", ""), k),
+                 state_changing=True, context_fn=_schedule_ctx, card_fn=_schedule_card, bind_fn=_transfer_bind),
+        ToolSpec("list_scheduled", "List the customer's scheduled transfers.", {"status": {"type": "string", "enum": ["pending", "executed", "cancelled", "failed"]}},
+                 lambda b, c, a, k: {"scheduled": b.list_scheduled(c, a.get("status"))}, untrusted_outputs=("payee_name",)),
+        ToolSpec("cancel_scheduled", "Cancel a pending scheduled transfer.",
+                 {"schedule_id": {"type": "string", "required": True, "pattern": r"X\d{3}"}},
+                 lambda b, c, a, k: b.cancel_scheduled(c, a["schedule_id"], k), state_changing=True,
+                 card_fn=_cancel_sched_card, bind_fn=_cancel_sched_bind),
+        ToolSpec("create_aa_requests", "Ask friends for their share of a bill (shares like 'P002:120.00,P004:120.00').",
+                 {"shares": {"type": "string", "required": True, "pattern": r"P\d{3}:\d{1,7}\.\d{2}(,P\d{3}:\d{1,7}\.\d{2}){0,4}", "maxlen": 120},
+                  "total": {"type": "money", "required": True},
+                  "note": {"type": "string", "maxlen": 50}},
+                 lambda b, c, a, k: b.create_aa_requests(c, _parse_shares(a["shares"]), to_fen(a["total"]), a.get("note", ""), k),
+                 state_changing=True, context_fn=_aa_ctx, card_fn=_aa_card, bind_fn=_aa_bind),
+        ToolSpec("annual_report", "Spending by month and category for a calendar year, computed in code.",
+                 {"year": {"type": "int", "required": True, "min": 2000, "max": 2100}},
+                 lambda b, c, a, k: b.annual_summary(c, a["year"]), untrusted_outputs=("merchant",)),
         ToolSpec("transfer", "Transfer money to a saved payee (payee_id from resolve_payee).",
                  {"payee_id": {"type": "string", "required": True, "pattern": PID},
                   "amount": {"type": "money", "required": True},

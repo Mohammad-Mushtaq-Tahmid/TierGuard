@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const $ = (s) => document.querySelector(s);
-  const EXAMPLES = ["帮我省点钱，停掉用得少的订阅", "有什么低风险理财可以买", "买一百块货币基金", "我买了哪些理财", "给我妈转五百", "转一千二给王小明", "上个月花了多少，有没有异常", "给李华转3万", "卡丢了先冻上", "我订阅了哪些服务", "把爱奇艺会员停了", "把每个月自动扣的视频会员停了", "我还剩多少钱", "Send 300 to mom"];
+  const EXAMPLES = ["明天早上给我妈转五百", "今晚聚餐一共360，我和王小明、李华AA，我先付了", "我想办一张虚拟卡", "把卡的单日限额调到两千", "给我看看今年的年度账单", "对比一下货币基金和短债基金", "我的预约转账有哪些", "帮我省点钱，停掉用得少的订阅", "有什么低风险理财可以买", "买一百块货币基金", "我买了哪些理财", "给我妈转五百", "转一千二给王小明", "上个月花了多少，有没有异常", "给李华转3万", "卡丢了先冻上", "我订阅了哪些服务", "把爱奇艺会员停了", "把每个月自动扣的视频会员停了", "我还剩多少钱", "Send 300 to mom"];
   const WARN = { FIRST_TIME_PAYEE: "First transfer to this payee." };
   const TIER = { green: "AUTO", yellow: "CONFIRM", red: "STRONG AUTH", black: "BLOCKED" };
   let sid = null, activeCard = null, busy = false, planEl = null, planId = null, planStage = null;
@@ -24,11 +24,13 @@
     if (mode) $("#mode").textContent = { record: "live model (answers cached)", replay: "offline replay", test: "test model" }[mode] || mode;
     const a = $("#acct"); a.replaceChildren();
     const chip = (label, value) => { const c = el("span", "chip-stat", label + " "); c.appendChild(el("b", "", value)); a.appendChild(c); };
+    chip("Date", st.date);
     chip("Balance", st.balance_cny + " CNY");
     chip("Today's transfers", st.daily_transfer_cny + " / " + st.yellow_limit_cny);
     st.cards.forEach((c) => chip("Card " + c.last4_masked, c.status));
     const active = st.subscriptions.filter((s) => s.status === "active").length;
     chip("Subscriptions", active + " active");
+    if (st.scheduled_pending) chip("Scheduled", st.scheduled_pending + " pending");
     if (st.locked) chip("Session", "LOCKED");
     const ch = $("#chain");
     ch.className = st.audit_ok ? "ok" : "bad";
@@ -172,6 +174,7 @@
   $("#send").onclick = submitInput;
   $("#msg").onkeydown = (e) => { if (e.key === "Enter") submitInput(); };
   $("#reset").onclick = () => start(true);
+  $("#advance").onclick = () => send({ action: "advance" }, "(next day)");
   $("#human").onclick = () => send({ action: "human" }, "Talk to a human");
   start(false);
 })();

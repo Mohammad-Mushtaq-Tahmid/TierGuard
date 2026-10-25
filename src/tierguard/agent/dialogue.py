@@ -13,6 +13,7 @@ from decimal import Decimal
 from tierguard.agent.nlu import (ALL_WORDS, CJK, TurnResult, _confirm_turn, _say, confirm_pending, latest_otp, plan_turn,
                                  product_flow, subscription_flow, transfer_flow, wealth_flow)
 from tierguard.agent.sanitize import count_invisible, sanitize
+from tierguard.agent.dates import strip_dates
 from tierguard.agent.zh_numbers import extract_amounts
 
 YES = {"确认", "确定", "好", "好的", "是", "是的", "对", "可以", "行", "没问题", "同意", "确认转账", "确认操作", "嗯",
@@ -20,7 +21,7 @@ YES = {"确认", "确定", "好", "好的", "是", "是的", "对", "可以", "�
 NO = {"取消", "算了", "不", "不要", "不用了", "不要了", "别转了", "停", "不转了", "no", "n", "nope", "cancel", "stop",
       "never mind", "nevermind", "abort"}
 ORD_ZH = {"第一个": 0, "第一": 0, "一": 0, "1": 0, "第二个": 1, "第二": 1, "二": 1, "2": 1, "第三个": 2, "第三": 2,
-          "三": 2, "3": 2}
+          "三": 2, "3": 2, "第一张": 0, "第二张": 1, "第三张": 2, "第一笔": 0, "第二笔": 1, "第三笔": 2}
 ORD_EN = {"first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2}
 MAX_OTP_TRIES = 3
 SKIP = {"跳过", "跳过这个", "下一个", "skip", "next", "skip this", "skip it"}
@@ -263,13 +264,18 @@ class Dialogue:
             c = pick_candidate(text, st["candidates"])
             if c is None:
                 return None
-            args = {"payee_id": c["payee_id"], "amount": f"{float(st['amount']):.2f}"}
+            args = {"payee_id": c["payee_id"], "amount": f"{Decimal(st['amount']):.2f}"}
+            if st.get("memo"):
+                args["memo"] = st["memo"]
+            if st.get("date"):
+                args["date"] = st["date"]
+                return _confirm_turn(self.g, self.s, "schedule_transfer", args, lang, [])
             return _confirm_turn(self.g, self.s, "transfer", args, lang, [])
         if st["type"] == "need_amount":
-            amts = extract_amounts(text)
+            amts = extract_amounts(strip_dates(text))
             if len(amts) != 1:
                 return None
-            return transfer_flow(self.g, self.s, lang, st["payee_query"], amts[0], [], heard=st.get("heard"))
+            return transfer_flow(self.g, self.s, lang, st["payee_query"], amts[0], [], heard=st.get("heard"), date=st.get("date"), memo=st.get("memo"))
         if st["type"] == "need_payee":
             q = re.sub(r"^(转给|转账给|给|to|send to)\s*", "", text.strip(), flags=re.I)[:60]
             if not q or extract_amounts(text) or len(q) > 20:
@@ -277,7 +283,7 @@ class Dialogue:
             probe = self.g.call(self.s, "resolve_payee", {"query": q})
             if probe.status != "executed" or not probe.data["candidates"]:
                 return None     # not a payee name: treat it as a brand-new request
-            return transfer_flow(self.g, self.s, lang, q, Decimal(st["amount"]), [])
+            return transfer_flow(self.g, self.s, lang, q, Decimal(st["amount"]), [], date=st.get("date"), memo=st.get("memo"))
         if st["type"] == "sub_choice":
             c = self._choose_subscription(text, st)
             if c is None:
@@ -334,4 +340,31 @@ class Dialogue:
                 return None
             amount = Decimal(st["amount"]) if st.get("amount") else None
             return product_flow(self.g, self.s, lang, st["kind"], chosen["product_id"], amount, st.get("whole", False), [])
+        if st["type"] == "card_choice":
+            from tierguard.agent.features import card_action
+            cards = st["cards"]
+            m = re.search(r"(?<!\d)(\d{4})(?!\d)", text)
+            chosen = None
+            if m:
+                hits = [c for c in cards if c["last4_masked"].endswith(m.group(1))]
+                chosen = hits[0] if len(hits) == 1 else None
+            else:
+                i = ordinal_index(text)
+                chosen = cards[i] if i is not None and i < len(cards) else None
+            if chosen is None:
+                return None
+            amount = Decimal(st["amount"]) if st.get("amount") else None
+            return card_action(self.g, self.s, lang, st["kind"], chosen["card_id"], amount, [])
+        if st["type"] == "need_limit":
+            from tierguard.agent.features import card_limit_amount
+            amts = extract_amounts(strip_dates(text))
+            if len(amts) != 1:
+                return None
+            return card_limit_amount(self.g, self.s, lang, st.get("utterance", ""), amts[0], [])
+        if st["type"] == "sched_choice":
+            from tierguard.agent.features import cancel_scheduled_card
+            i = ordinal_index(text)
+            if i is None or i >= len(st["items"]):
+                return None
+            return cancel_scheduled_card(self.g, self.s, lang, st["items"][i], [])
         return None

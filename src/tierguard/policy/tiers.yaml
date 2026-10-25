@@ -13,6 +13,8 @@ tools:
   summarise_spending:     {tier: green}
   resolve_payee:          {tier: green}
   get_cards:              {tier: green}
+  list_scheduled:         {tier: green}
+  annual_report:          {tier: green}
   list_products:          {tier: green}
   resolve_product:        {tier: green}
   get_holdings:           {tier: green}
@@ -26,6 +28,16 @@ tools:
     warnings:
       - {when: new_payee, code: FIRST_TIME_PAYEE}
     risk_warning: "Transfers cannot be reversed by the assistant. Check the payee and amount."
+  schedule_transfer:
+    tier: yellow                                                   # same tiering as an immediate transfer, judged on the DATE it runs
+    sensitive_args: [payee_id, amount, date]
+    escalate:
+      - {when: projected_over_limit, to: red, reason: DAILY_CUMULATIVE_OVER_1000}
+    warnings:
+      - {when: new_payee, code: FIRST_TIME_PAYEE}
+    risk_warning: "The transfer will run automatically on that date. If funds or limits no longer allow it, it will not run."
+  cancel_scheduled:       {tier: yellow, sensitive_args: [schedule_id]}
+  create_aa_requests:     {tier: yellow, sensitive_args: [shares, total]}   # sends requests to other people, moves no money
   pause_or_cancel_subscription: {tier: yellow, sensitive_args: [subscription_id]}
   apply_virtual_card:     {tier: yellow}
   freeze_card:            {tier: yellow, sensitive_args: [card_id]}   # ASSUMPTION: protective action

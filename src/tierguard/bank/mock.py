@@ -98,6 +98,8 @@ class Bank:
             "F003": {"name": "均衡混合基金", "name_en": "Balanced Mixed Fund", "risk": 3, "min_fen": 10_000,
                      "ref_yield": "5.20", "redeem": "T+2", "aliases": ["混合", "均衡", "balanced"]},
         }
+        self.scheduled: dict[str, dict] = {}      # future-dated transfers: id -> instruction + status
+        self.requests: dict[str, dict] = {}       # AA payment requests sent to friends
         self.profiles = {"C001": 2, "C002": 1}          # customer risk profile (1 conservative .. 3 balanced)
         self.holdings: dict[tuple[str, str], int] = {}
         self.txns: list[dict] = []
@@ -297,9 +299,9 @@ class Bank:
         if idem_key and idem_key in self._idem:
             return {**self._idem[idem_key], "duplicate": True}
         kid = f"K{len(self.cards) + 900:03d}"
-        self.cards[kid] = {"customer_id": cid, "last4": f"{len(self.cards) * 1111 % 10000:04d}",
+        self.cards[kid] = {"customer_id": cid, "last4": f"{7000 + len(self.cards):04d}",
                            "kind": "virtual", "status": "active", "daily_limit_fen": 100_000}
-        res = {"card_id": kid, "kind": "virtual", "status": "active",
+        res = {"card_id": kid, "kind": "virtual", "status": "active", "daily_limit_cny": cny(self.cards[kid]["daily_limit_fen"]),
                "last4_masked": "****" + self.cards[kid]["last4"], "duplicate": False}
         if idem_key:
             self._idem[idem_key] = res
@@ -431,3 +433,102 @@ class Bank:
         if idem_key:
             self._idem[idem_key] = res
         return res
+
+    # ---------- scheduled transfers ----------
+    YELLOW_LIMIT_FEN = 100_000
+    MAX_DAILY_LIMIT_FEN = 5_000_000
+
+    def sched_total_fen(self, cid, date_iso, exclude=None):
+        """Everything already planned to leave the account on that date (pending scheduled + today's executed transfers)."""
+        t = sum(x["amount_fen"] for k, x in self.scheduled.items()
+                if x["customer_id"] == cid and x["date"] == date_iso and x["status"] == "pending" and k != exclude)
+        if date_iso == self.today.isoformat():
+            t += self.daily_transfer_total_fen(cid)
+        return t
+
+    def schedule_transfer(self, cid, payee_id, amount_fen, date_iso, memo="", idem_key=None):
+        if idem_key and idem_key in self._idem:
+            return {**self._idem[idem_key], "duplicate": True}
+        self._maybe_fail("schedule_transfer")
+        p = self.get_payee(cid, payee_id)
+        d = _d(date_iso)
+        if d <= self.today:
+            raise BankError("BAD_DATE", "The scheduled date must be in the future")
+        if (d - self.today).days > 365:
+            raise BankError("BAD_DATE", "The scheduled date is more than a year away")
+        if amount_fen <= 0:
+            raise BankError("BAD_AMOUNT", "Amount must be positive")
+        sid = f"X{len(self.scheduled) + 1:03d}"
+        self.scheduled[sid] = {"customer_id": cid, "payee_id": payee_id, "amount_fen": amount_fen, "date": date_iso, "memo": memo,
+                               "status": "pending", "auth_tier": None, "created": self.today.isoformat(), "detail": ""}
+        res = {"schedule_id": sid, "payee_name": p["name"], "payee_account_masked": mask(p["no"]), "amount_cny": cny(amount_fen),
+               "date": date_iso, "status": "pending", "duplicate": False}
+        if idem_key:
+            self._idem[idem_key] = res
+        return res
+
+    def list_scheduled(self, cid, status=None):
+        self._maybe_fail("list_scheduled")
+        return [{"schedule_id": k, "payee_id": x["payee_id"], "payee_name": self.payees[x["payee_id"]]["name"], "amount_cny": cny(x["amount_fen"]),
+                 "date": x["date"], "status": x["status"], "detail": x["detail"]}
+                for k, x in sorted(self.scheduled.items(), key=lambda kv: (kv[1]["date"], kv[0]))
+                if x["customer_id"] == cid and (not status or x["status"] == status)]
+
+    def cancel_scheduled(self, cid, schedule_id, idem_key=None):
+        self._maybe_fail("cancel_scheduled")
+        x = self._own(self.scheduled, schedule_id, cid, "Scheduled transfer")
+        if x["status"] != "pending":
+            raise BankError("BAD_STATE", f"That scheduled transfer is already {x['status']}")
+        x["status"] = "cancelled"
+        return {"schedule_id": schedule_id, "payee_name": self.payees[x["payee_id"]]["name"], "amount_cny": cny(x["amount_fen"]),
+                "date": x["date"], "status": "cancelled"}
+
+    def due_scheduled(self, cid):
+        return [k for k, x in sorted(self.scheduled.items(), key=lambda kv: (kv[1]["date"], kv[0]))
+                if x["customer_id"] == cid and x["status"] == "pending" and x["date"] <= self.today.isoformat()]
+
+    def advance_days(self, n=1):
+        self.today = self.today + dt.timedelta(days=n)
+
+    # ---------- AA payment requests ----------
+    def create_aa_requests(self, cid, shares, total_fen, note="", idem_key=None):
+        if idem_key and idem_key in self._idem:
+            return {**self._idem[idem_key], "duplicate": True}
+        self._maybe_fail("create_aa_requests")
+        if not (1 <= len(shares) <= 5):
+            raise BankError("BAD_SHARES", "Between 1 and 5 people can be asked")
+        if len({pid for pid, _ in shares}) != len(shares):
+            raise BankError("BAD_SHARES", "The same person appears twice")
+        if sum(a for _, a in shares) > total_fen or any(a <= 0 for _, a in shares):
+            raise BankError("BAD_SHARES", "The shares do not add up to the bill")
+        out = []
+        for pid, a in shares:
+            p = self.get_payee(cid, pid)
+            rid = f"R{len(self.requests) + 1:03d}"
+            self.requests[rid] = {"customer_id": cid, "payee_id": pid, "amount_fen": a, "note": note, "status": "sent",
+                                  "created": self.today.isoformat()}
+            out.append({"request_id": rid, "payee_name": p["name"], "amount_cny": cny(a)})
+        res = {"requests": out, "count": len(out), "total_cny": cny(total_fen), "duplicate": False}
+        if idem_key:
+            self._idem[idem_key] = res
+        return res
+
+    # ---------- annual report ----------
+    def annual_summary(self, cid, year):
+        self._maybe_fail("annual_summary")
+        rows = self._spend(cid, f"{year}-01-01", f"{year}-12-31")
+        months: dict[str, list[int]] = {}
+        cats: dict[str, int] = {}
+        for t in rows:
+            m = months.setdefault(t["date"][:7], [0, 0])
+            m[0] += -t["amount_fen"]
+            m[1] += 1
+            cats[t["category"]] = cats.get(t["category"], 0) + -t["amount_fen"]
+        total = sum(v[0] for v in months.values())
+        ms = [{"month": k, "total_cny": cny(v[0]), "count": v[1]} for k, v in sorted(months.items())]
+        busiest = max(months.items(), key=lambda kv: kv[1][0]) if months else None
+        return {"year": year, "total_cny": cny(total), "months": ms, "months_with_data": len(ms),
+                "average_month_cny": cny(total // len(ms)) if ms else "0.00",
+                "busiest_month": {"month": busiest[0], "total_cny": cny(busiest[1][0])} if busiest else None,
+                "by_category": {k: {"total_cny": cny(v)} for k, v in sorted(cats.items(), key=lambda kv: -kv[1])},
+                "anomalies": self._anomalies(cid, rows)}

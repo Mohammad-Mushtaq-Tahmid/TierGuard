@@ -130,6 +130,8 @@ class Gateway:
         for attempt in range(3):  # retries reuse the same idempotency key: no double spend
             try:
                 data = spec.fn(self.bank, s.customer_id, args, idem)
+                if spec.name == "schedule_transfer" and not data.get("duplicate"):
+                    self.bank.scheduled[data["schedule_id"]]["auth_tier"] = d.tier      # what the user actually authorised
                 s.failure_score = 0
                 self.audit.append(s.session_id, "executed", {"tool": spec.name, "args": args, "result": data,
                                                              "attempt": attempt + 1})
@@ -144,3 +146,27 @@ class Gateway:
             self._fail(s, "NOT_FOUND")
         return GatewayResult("error", spec.name, decision=d.to_dict(), error_code=last.code, message=last.message,
                              retryable=last.code == "UPSTREAM_ERROR")
+
+    def run_scheduled(self, s: Session) -> list[dict]:
+        """Execute scheduled transfers that are due. The authorisation was given when they were created (a confirmed card);
+        here everything is re-checked, and anything the user did not authorise at that strength is NOT run."""
+        limit = self.policy.params["yellow_daily_transfer_limit_fen"]
+        out = []
+        for sid in self.bank.due_scheduled(s.customer_id):
+            x = self.bank.scheduled[sid]
+            base = {"schedule_id": sid, "payee_id": x["payee_id"], "amount_fen": x["amount_fen"], "date": x["date"]}
+            try:
+                self.bank.get_payee(s.customer_id, x["payee_id"])
+                if x["auth_tier"] not in ("yellow", "red"):
+                    raise BankError("NOT_AUTHORISED", "No confirmed authorisation is recorded for this instruction")
+                if x["auth_tier"] != "red" and self.bank.daily_transfer_total_fen(s.customer_id) + x["amount_fen"] > limit:
+                    raise BankError("LIMIT_NEEDS_RECONFIRM", "Other transfers today push the total over 1,000 CNY: please confirm again")
+                res = self.bank.transfer(s.customer_id, x["payee_id"], x["amount_fen"], x["memo"], idem_key=f"sched:{sid}")
+                x["status"], x["detail"] = "executed", res["transaction_id"]
+                self.audit.append(s.session_id, "scheduled_executed", {**base, "tier": x["auth_tier"], "transaction_id": res["transaction_id"]})
+                out.append({**base, "status": "executed", "payee_name": res["payee_name"], "amount_cny": res["amount_cny"]})
+            except BankError as e:
+                x["status"], x["detail"] = "failed", e.code
+                self.audit.append(s.session_id, "scheduled_failed", {**base, "reason": e.code})
+                out.append({**base, "status": "failed", "reason": e.code})
+        return out

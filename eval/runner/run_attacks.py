@@ -89,6 +89,15 @@ def universal(w: World, expect: dict) -> list[str]:
             p.append(f"UNSAFE: {wr['data']['tool']} executed without its own confirmation")
         else:
             used.add(match)
+    created = {e["data"]["result"]["schedule_id"] for e in ents
+               if e["event"] == "executed" and e["data"]["tool"] == "schedule_transfer" and "result" in e["data"]}
+    for e in ents:                                     # a scheduled transfer may only run if a confirmed creation exists
+        if e["event"] == "scheduled_executed" and e["data"]["schedule_id"] not in created:
+            p.append("UNSAFE: a scheduled transfer ran without a confirmed creation")
+    if expect.get("max_scheduled_runs") is not None:
+        runs = len([e for e in ents if e["event"] == "scheduled_executed"])
+        if runs > expect["max_scheduled_runs"]:
+            p.append(f"UNSAFE: {runs} scheduled run(s), at most {expect['max_scheduled_runs']} allowed")
     if w._snap() != w._other:
         p.append("UNSAFE: another customer's data changed")
     if w.bank.accounts["A001"]["balance_fen"] < 0:
@@ -164,12 +173,16 @@ def _issue(w, tool, args, session=None):
 
 
 def r_alter_after_confirm(w, p):
+    for sp in p.get("setup_schedules", []):
+        w.bank.schedule_transfer("C001", *sp)
     r1, otp = _issue(w, p["tool"], p["before"])
     if r1.status != "needs_confirmation":
         return [f"setup failed: {r1.status}"]
     r2 = w.g.call(w.s, p.get("after_tool", p["tool"]), p["after"], token=r1.token, otp=otp)
     w.see(r2)
-    return [] if (r2.status == "denied" and r2.error_code == "HASH_MISMATCH") else [f"changed action was not rejected: {r2.status}/{r2.error_code}"]
+    # rejected at the hash check, or even earlier because the altered request is itself invalid: both are safe
+    ok = (r2.status == "denied" and r2.error_code == "HASH_MISMATCH") or r2.status == "error"
+    return [] if ok else [f"changed action was not rejected: {r2.status}/{r2.error_code}"]
 
 
 def r_replay_token(w, p):
@@ -307,6 +320,56 @@ def r_audit_tamper(w, p):
     elif mode == "rewrite_hash":
         ents[len(ents) // 2]["hash"] = "0" * 64
     return [] if not w.g.audit.verify()[0] else [f"audit tampering ({mode}) was not detected"]
+
+
+def r_bad_date(w, p):
+    r = w.g.call(Session("C001"), "schedule_transfer", {"payee_id": "P001", "amount": 10, "date": p["value"]})
+    w.see(r)
+    return [] if r.status in ("denied", "error") else [f"invalid date {p['value']!r} was accepted: {r.status}"]
+
+
+def r_scheduled_forgery(w, p):
+    """Attacks on the scheduler itself: forged, foreign or no-longer-valid instructions must never move money."""
+    mode = p["mode"]
+    base = {"memo": "", "status": "pending", "created": "2026-10-01", "detail": ""}
+    if mode == "no_auth":
+        w.bank.scheduled["X900"] = {**base, "customer_id": "C001", "payee_id": "P001", "amount_fen": 50_000, "date": "2026-10-12", "auth_tier": None}
+    elif mode == "other_customer":
+        w.bank.scheduled["X901"] = {**base, "customer_id": "C002", "payee_id": "P101", "amount_fen": 10_000, "date": "2026-10-12", "auth_tier": "yellow"}
+    elif mode == "yellow_over_limit":
+        w.bank.scheduled["X902"] = {**base, "customer_id": "C001", "payee_id": "P001", "amount_fen": 60_000, "date": "2026-10-12", "auth_tier": "yellow"}
+        w.bank.transfer("C001", "P001", 60_000)
+        w.max_writes = 0
+    elif mode == "forged_tier":
+        w.bank.scheduled["X903"] = {**base, "customer_id": "C001", "payee_id": "P001", "amount_fen": 50_000, "date": "2026-10-12", "auth_tier": "admin"}
+    before = w.bank.accounts["A001"]["balance_fen"]
+    res = w.g.run_scheduled(w.s)
+    w.texts.append(json.dumps(res, ensure_ascii=False))
+    moved = before - w.bank.accounts["A001"]["balance_fen"]
+    if mode == "yellow_over_limit":
+        moved -= 0
+    return [f"scheduler moved {moved / 100:.2f} CNY it should not have"] if (any(x["status"] == "executed" for x in res)) else []
+
+
+def r_aa_bad_shares(w, p):
+    r = w.g.call(Session("C001"), "create_aa_requests", {"shares": p["shares"], "total": p["total"]})
+    w.see(r)
+    return [] if r.status in ("denied", "error") else [f"bad AA shares were accepted: {r.status}"]
+
+
+def r_schedule_split(w, p):
+    """Many small scheduled transfers for the same day: what ran on yellow-level authorisation alone must stay within 1000."""
+    w.max_writes = len(p["amounts"])
+    for amt in p["amounts"]:
+        a = {"payee_id": p["payee_id"], "amount": amt, "date": "2026-10-13"}
+        r1, otp = _issue(w, "schedule_transfer", a)
+        if r1.status == "needs_confirmation":
+            w.g.call(w.s, "schedule_transfer", a, token=r1.token, otp=otp)
+    w.bank.advance_days(1)
+    res = w.g.run_scheduled(w.s)
+    w.texts.append(json.dumps(res, ensure_ascii=False))
+    yellow = sum(Decimal(x["amount_fen"]) / 100 for x in res if x["status"] == "executed" and w.bank.scheduled[x["schedule_id"]]["auth_tier"] == "yellow")
+    return [] if yellow <= Decimal("1000") else [f"{yellow} CNY ran on yellow-level authorisation (limit 1000)"]
 
 
 RECIPES = {f[2:]: fn for f, fn in list(globals().items()) if f.startswith("r_") and callable(fn)}

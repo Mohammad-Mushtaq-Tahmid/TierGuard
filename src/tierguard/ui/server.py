@@ -22,6 +22,7 @@ STATIC = Path(__file__).with_name("static")
 FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
          "/style.css": ("style.css", "text/css; charset=utf-8")}
 ACTION_TEXT = {"confirm": ("确认", "confirm"), "cancel": ("取消", "cancel"), "skip": ("跳过", "skip"), "human": ("转人工", "human")}
+ACTIONS = set(ACTION_TEXT) | {"advance"}
 MAX_BODY, MAX_SESSIONS, MAX_MSG = 8192, 50, 500
 
 
@@ -88,6 +89,10 @@ def summarize(e: dict) -> dict:
         tone, txt = "yellow", f"Plan approval covers this read-only step: {d['tool']} ({d['tier']})"
     elif ev == "plan_cancelled":
         tone, txt = "yellow", "Plan cancelled: remaining steps will not run"
+    elif ev == "scheduled_executed":
+        tone, txt = "green", f"Scheduled transfer {d['schedule_id']} executed (authorised as {d['tier']})"
+    elif ev == "scheduled_failed":
+        tone, txt = "red", f"Scheduled transfer {d['schedule_id']} NOT executed: {d['reason']}"
     elif ev == "human_handoff":
         tone, txt = "red", "Handed to a human: automatic actions paused"
     elif ev == "confirmation_issued":
@@ -120,7 +125,8 @@ def snapshot(c: Ctx) -> dict:
     return {"balance_cny": b.get_balance(cid)["balance_cny"], "daily_transfer_cny": cny(b.daily_transfer_total_fen(cid)),
             "yellow_limit_cny": "1000.00", "cards": b.list_cards(cid),
             "subscriptions": b.list_subscriptions(cid), "locked": c.session.locked,
-            "audit_len": len(c.gateway.audit.entries), "audit_ok": c.gateway.audit.verify()[0]}
+            "audit_len": len(c.gateway.audit.entries), "audit_ok": c.gateway.audit.verify()[0],
+            "date": b.today.isoformat(), "scheduled_pending": len([1 for x in b.scheduled.values() if x["customer_id"] == cid and x["status"] == "pending"])}
 
 
 class App:
@@ -154,6 +160,13 @@ class App:
         sid, c = self.ctx(sid)
         with c.lock:
             d = c.dialogue
+            if action == "advance":               # demo clock: one day passes, due scheduled transfers are re-checked and run
+                from tierguard.agent.features import advance_message
+                c.bank.advance_days(1)
+                results = c.gateway.run_scheduled(c.session)
+                reply = {"kind": "answer", "message": advance_message(results, c.bank.today, d.lang), "card": None, "awaiting_otp": False}
+                return {"sid": sid, "reply": reply, "plan": d.plan_view, "events": self.events_since(c), "state": snapshot(c),
+                        "sms": None, "mode": self.mode}, 200
             if action in ACTION_TEXT:
                 text = ACTION_TEXT[action][0 if d.lang == "zh" else 1]
             text = (text or "").strip()[:MAX_MSG]
@@ -259,7 +272,7 @@ def make_handler(app: App, limiter: RateLimiter):
                 sid, c = app.reset(sid)
                 return self._json({"sid": sid, "state": snapshot(c), "mode": app.mode, "events": []})
             text = body.get("message") if isinstance(body.get("message"), str) else None
-            action = body.get("action") if body.get("action") in ACTION_TEXT else None
+            action = body.get("action") if body.get("action") in ACTIONS else None
             out, code = app.chat(sid, text, action)
             self._json(out, code)
     return H
